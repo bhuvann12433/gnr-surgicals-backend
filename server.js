@@ -1,60 +1,71 @@
-import authRoutes from './routes/auth.js';
-import express from 'express';
+// backend/server.js
 import mongoose from 'mongoose';
-import cors from 'cors';
 import dotenv from 'dotenv';
-import equipmentRoutes from './routes/equipment.js';
-import statsRoutes from './routes/stats.js';
+import os from 'os';
+import app from './app.js';  // ⭐ IMPORTANT: load app.js
 
 dotenv.config();
 
-const app = express();
+// --- Config ---
 const PORT = process.env.PORT || 5000;
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/gnr_surgicals';
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/gnr_surgicals';
+const DB_NAME = process.env.DB_NAME || 'gnr_surgicals';
 
-// Middleware
-app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// ---- Helpers for graceful shutdown ----
+let serverInstance = null;
+const startServer = () => {
+  serverInstance = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 Server running on:`);
+    console.log(`   ➜ Local:   http://localhost:${PORT}`);
+    console.log(`Health check: http://localhost:${PORT}/api/health`);
 
-// Routes
-app.use('/api/equipment', equipmentRoutes);
-app.use('/api/stats', statsRoutes);
-app.use('/api/auth', authRoutes);
+    // print LAN IPs
+    const nets = os.networkInterfaces();
+    Object.values(nets).forEach(ifaces =>
+      ifaces.forEach(net => {
+        if (net.family === 'IPv4' && !net.internal) {
+          console.log(`   ➜ Network: http://${net.address}:${PORT}`);
+        }
+      })
+    );
+  });
+};
 
-// Health check
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'OK', message: 'Gnr Surgicals API is running' });
-});
+const gracefulShutdown = async (signal) => {
+  console.log(`\n[${new Date().toISOString()}] Received ${signal} — shutting down gracefully...`);
+  try {
+    if (serverInstance) {
+      await new Promise((resolve) => serverInstance.close(resolve));
+    }
+    await mongoose.connection.close();
+    console.log('MongoDB connection closed.');
+  } catch (err) {
+    console.error('Error during graceful shutdown:', err);
+  } finally {
+    process.exit(0);
+  }
+};
 
-// Connect to MongoDB
-mongoose.connect(MONGODB_URI)
+// --- MongoDB connection ---
+mongoose
+  .connect(MONGO_URI, { dbName: DB_NAME })
   .then(() => {
-    console.log('Connected to MongoDB');
-    app.listen(PORT, () => {
-      console.log(`Server running on port ${PORT}`);
-      console.log(`Health check: http://localhost:${PORT}/api/health`);
-    });
+    console.log(`✅ Connected to MongoDB [${DB_NAME}]`);
+    startServer();
   })
   .catch((error) => {
-    console.error('MongoDB connection error:', error);
+    console.error('❌ MongoDB connection error:', error.message);
     process.exit(1);
   });
 
-// Graceful shutdown
-process.on('SIGINT', async () => {
-  console.log('\nShutting down gracefully...');
-  await mongoose.connection.close();
-  process.exit(0);
+// --- Process signal handlers ---
+process.once('SIGUSR2', async () => await gracefulShutdown('SIGUSR2'));
+['SIGINT', 'SIGTERM'].forEach(sig =>
+  process.on(sig, async () => await gracefulShutdown(sig))
+);
+
+process.on('unhandledRejection', (reason) => console.error('Unhandled Rejection:', reason));
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception thrown:', err);
+  process.exit(1);
 });
-
-
-
-
-
-
-
-
-
-
-
